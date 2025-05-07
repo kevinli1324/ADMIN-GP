@@ -1,0 +1,146 @@
+library(tgp)
+library(scoringRules)
+library(lhs)
+library(BART)
+
+
+ht1 <- function(X) {
+  return(sin(1*X[, 1]) + cos(.5*X[, 2]))
+}
+
+ht2 <- function(X) {
+  return(sin(.5*X[, 1]*X[, 2]))
+}
+
+ht3 <- function(X) {
+  return(X[, 2]*cos(.75*X[, 1]))
+}
+
+
+draw_data <- function(ntrain, ntest = 300, D = 20, stride = 6) {
+  n = ntrain + ntest
+  X = matrix(rnorm(n = (ntrain + ntest)*D), nrow = ntrain + ntest, ncol = D)
+  X = randomLHS(n, D) - .5
+
+  M1 = matrix(rnorm(n = (D)*2), nrow = 2, ncol = D)
+  M1[, 1:stride] <- matrix(rnorm(mean = 3, sd = 1, n = (stride*2)), nrow = 2, ncol = stride)
+  M2 = matrix(rnorm(n = (D)*2), nrow = 2, ncol = D)
+  M2[, (stride +1):(2*stride)] <- matrix(rnorm(mean = 3, sd = 1,n = (stride*2)), nrow = 2, ncol = stride)
+  M3 = matrix(rnorm(n = (D)*2), nrow = 2, ncol = D)
+  M3[, (2*stride +1):(3*stride)] <- matrix(rnorm(mean = 3, sd = 1,n = (stride*2)), nrow = 2, ncol = stride)
+  
+  nX1 = t(M1 %*% t(X))
+  nX1 = nX1/sd(as.vector(nX1))
+  nX2 = t(M2 %*% t(X))
+  nX2 = nX2/sd(as.vector(nX2))
+  nX3 = t(M3 %*% t(X))
+  nX3 = nX3/sd(as.vector(nX3))
+  
+  Y = .4*ht1(nX1) + .3*ht2(nX2) + .3*ht3(nX3)
+  Y = Y + rnorm(n = n)*.15*sd(Y)
+  
+  Xtest = X[(ntrain +1):n, ]
+  X = X[1:ntrain, ]
+  
+  Ytest = Y[(ntrain +1):n]
+  Y = Y[1:ntrain]
+  
+  return(list(X = X, Xtest = Xtest, Y =Y, Ytest = Ytest))
+  
+}
+
+folds <- 10
+train_vec <- c(500, 400, 300)
+d_vec <- c(20, 25, 30)
+final_list <- list()
+for(D in d_vec) {
+  result_list <- list()
+  for(n in train_vec) {
+    ntrain <- n
+    rmse <- rep(NA, folds)
+    crps <- rep(NA, folds)
+    cov_vec <- rep(NA, folds)
+    for(i in 1:folds) {
+      print(n)
+      print(i)
+      
+      samp_list = draw_data(ntrain = ntrain, D = D, stride = D %/% 3)
+      Ytest  = samp_list[["Ytest"]]  
+      Y  = samp_list[["Y"]]  
+      X = samp_list[["X"]]
+      Xtest = samp_list[["Xtest"]]
+      
+      X_sd = apply(X, 2, sd)
+      X_mean = apply(X, 2, mean)
+      
+      Ysd <- sd(Y)
+      Ym <- mean(Y)
+      for(k in 1:ncol(X)) {
+        X[, k] = (X[, k] - X_mean[k])/X_sd[k]
+        Xtest[, k] = (Xtest[, k] - X_mean[k])/X_sd[k]
+      }
+      #Xtot = (Xtot - X_mean)/X_sd
+      Y <- (Y -Ym)/Ysd
+      Ytest <- (Ytest -Ym)/Ysd
+      
+      what <- wbart(X, Y, Xtest, nskip = 10000, ndpost = 5000, printevery = 1000L)
+      
+      rmse[i] <- mean((what$yhat.test.mean - Ytest)^2)^(.5)
+      
+      
+      #calculate crps
+      zM <- what$yhat.test
+      
+      crps_vec <- rep(NA, ncol(zM))
+      for(j in 1:ncol(zM)) {
+        crps_vec[j] <- crps_sample(Ytest[j], zM[, j])
+      }
+      
+
+      crps_vec <- rep(NA, ncol(zM))
+      for(j in 1:ncol(zM)) {
+        crps_vec[j] <- crps_sample(Ytest[j], zM[, j])
+      }
+      crps[i] <- mean(crps_vec)
+      lower <- apply(zM, 2, function(x) quantile(x, .025))
+      upper <- apply(zM, 2, function(x) quantile(x, .975))
+      #cov <- mean(Ytest < upper & Ytest > lower)
+      
+      cov_vec[i] <- mean(Ytest < upper & Ytest > lower, na.rm = TRUE)
+      print(rmse)
+      print(crps)
+      print(cov_vec)
+      
+    }
+    print( list(crps = crps, rmse = rmse, cov = cov_vec))
+    result_list[[as.character(n)]] <- list(crps = crps, rmse = rmse, cov = cov_vec)
+  }
+  save_str <- paste0("bart_mix_dat_", as.character(D), ".rds")
+  saveRDS(result_list, file = save_str)
+  final_list[[as.character(D)]] <- result_list
+}
+
+saveRDS(final_list, file = "mix_dat_bart.rds")
+
+final_list <- readRDS("mix_dat_bart.rds")
+
+folds <- 10
+n_vec <- as.character(c(300, 400, 500))
+d_vec <- c(20, 25, 30)
+folds_vec<- seq(1:folds)
+val_vec <- c("rmse",  "crps", "cov")
+result_frame <- expand.grid(n_vec ,d_vec ,folds_vec, val_vec)
+colnames(result_frame) <- c("n", "Dimension", "Fold", "Statistic")
+
+val <- rep(NA, nrow(result_frame))
+for(i in 1:nrow(result_frame)) {
+  frame_fold <- result_frame[i, ]$Fold
+  inner_vec <- final_list[[as.character(result_frame[i, ]$Dimension)]][[as.character(result_frame[i, ]$n)]][[as.character(result_frame[i, ]$Statistic)]]
+  val[i] <- inner_vec[frame_fold]
+}
+
+
+result_frame$Value <- val
+
+
+write.csv(result_frame, "sim_sim_bart.csv")
