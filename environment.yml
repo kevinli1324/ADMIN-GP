@@ -1,0 +1,15 @@
+name: admingp
+channels:
+  - defaults
+dependencies:
+  - numpy=1.26.4
+  - matplotlib=3.10.1
+  - pip=25.0.1
+  - pandas=2.2.3
+  - tqdm=4.67.1
+  - pip:
+      - properscoring==0.1
+      - torch==2.7.1
+      - qmc==0.0.1
+      - scipy==1.16.0
+      - gpytorch==1.14
